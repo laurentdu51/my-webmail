@@ -8,18 +8,31 @@ interface AuthFormProps {
 
 export default function AuthForm({ onAuth }: AuthFormProps) {
   const [isSignUp, setIsSignUp] = useState(false);
+  const [isForgotPassword, setIsForgotPassword] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
     setError('');
+    setSuccess('');
 
     try {
-      if (isSignUp) {
+      if (isForgotPassword) {
+        const { error } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${window.location.origin}`,
+        });
+        if (error) throw error;
+        setSuccess('Un email de réinitialisation a été envoyé à votre adresse.');
+        setTimeout(() => {
+          setIsForgotPassword(false);
+          setSuccess('');
+        }, 3000);
+      } else if (isSignUp) {
         const { error } = await supabase.auth.signUp({
           email,
           password,
@@ -63,6 +76,12 @@ export default function AuthForm({ onAuth }: AuthFormProps) {
             </div>
           )}
 
+          {success && (
+            <div className="bg-green-50 text-green-600 p-3 rounded-lg text-sm">
+              {success}
+            </div>
+          )}
+
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Adresse e-mail
@@ -80,41 +99,67 @@ export default function AuthForm({ onAuth }: AuthFormProps) {
             </div>
           </div>
 
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Mot de passe
-            </label>
-            <div className="relative">
-              <Lock size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
-              <input
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="••••••••"
-                required
-              />
+          {!isForgotPassword && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Mot de passe
+              </label>
+              <div className="relative">
+                <Lock size={18} className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400" />
+                <input
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  placeholder="••••••••"
+                  required
+                />
+              </div>
             </div>
-          </div>
+          )}
 
           <button
             type="submit"
             disabled={loading}
             className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
           >
-            {loading ? 'Chargement...' : isSignUp ? 'Créer un compte' : 'Se connecter'}
+            {loading ? 'Chargement...' : isForgotPassword ? 'Envoyer le lien' : isSignUp ? 'Créer un compte' : 'Se connecter'}
           </button>
 
-          <div className="text-center">
-            <button
-              type="button"
-              onClick={() => setIsSignUp(!isSignUp)}
-              className="text-sm text-blue-600 hover:text-blue-700"
-            >
-              {isSignUp
-                ? 'Vous avez déjà un compte ? Se connecter'
-                : "Pas de compte ? S'inscrire"}
-            </button>
+          <div className="text-center space-y-2">
+            {!isForgotPassword && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setIsSignUp(!isSignUp)}
+                  className="block w-full text-sm text-blue-600 hover:text-blue-700"
+                >
+                  {isSignUp
+                    ? 'Vous avez déjà un compte ? Se connecter'
+                    : "Pas de compte ? S'inscrire"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsForgotPassword(true)}
+                  className="block w-full text-sm text-gray-600 hover:text-gray-700"
+                >
+                  Mot de passe oublié ?
+                </button>
+              </>
+            )}
+            {isForgotPassword && (
+              <button
+                type="button"
+                onClick={() => {
+                  setIsForgotPassword(false);
+                  setError('');
+                  setSuccess('');
+                }}
+                className="block w-full text-sm text-blue-600 hover:text-blue-700"
+              >
+                Retour à la connexion
+              </button>
+            )}
           </div>
         </form>
       </div>
