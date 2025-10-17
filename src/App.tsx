@@ -70,10 +70,13 @@ function App() {
 
     setLoading(true);
     try {
+      console.log('Loading messages for account:', selectedAccount.email, 'folder:', selectedFolder);
       const msgs = await fetchMessages(selectedAccount.id, selectedFolder);
+      console.log('Loaded messages:', msgs.length);
       setMessages(msgs.reverse());
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error loading messages:', error);
+      alert(`Erreur lors du chargement des messages: ${error.message}`);
     } finally {
       setLoading(false);
     }

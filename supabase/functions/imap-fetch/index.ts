@@ -14,14 +14,29 @@ interface ImapConfig {
   host: string;
   port: number;
   tls: boolean;
+  tlsOptions?: any;
 }
 
 function connectImap(config: ImapConfig): Promise<any> {
   return new Promise((resolve, reject) => {
-    const imap = new Imap(config);
+    console.log('Connecting to IMAP:', config.host, config.port);
     
-    imap.once('ready', () => resolve(imap));
-    imap.once('error', reject);
+    const imap = new Imap({
+      ...config,
+      tlsOptions: { rejectUnauthorized: false },
+      connTimeout: 10000,
+      authTimeout: 5000,
+    });
+    
+    imap.once('ready', () => {
+      console.log('IMAP connection ready');
+      resolve(imap);
+    });
+    
+    imap.once('error', (err: any) => {
+      console.error('IMAP connection error:', err);
+      reject(err);
+    });
     
     imap.connect();
   });
@@ -29,23 +44,42 @@ function connectImap(config: ImapConfig): Promise<any> {
 
 function openBox(imap: any, boxName: string, readOnly: boolean = true): Promise<any> {
   return new Promise((resolve, reject) => {
+    console.log('Opening box:', boxName);
     imap.openBox(boxName, readOnly, (err: any, box: any) => {
-      if (err) reject(err);
-      else resolve(box);
+      if (err) {
+        console.error('Error opening box:', err);
+        reject(err);
+      } else {
+        console.log('Box opened, total messages:', box.messages.total);
+        resolve(box);
+      }
     });
   });
 }
 
-function fetchMessages(imap: any, range: string): Promise<any[]> {
+function fetchMessages(imap: any, box: any, range: string): Promise<any[]> {
   return new Promise((resolve, reject) => {
     const messages: any[] = [];
     
-    const f = imap.seq.fetch(range, {
+    if (box.messages.total === 0) {
+      console.log('No messages in mailbox');
+      resolve([]);
+      return;
+    }
+    
+    const start = Math.max(1, box.messages.total - 49);
+    const end = box.messages.total;
+    const actualRange = `${start}:${end}`;
+    
+    console.log('Fetching messages:', actualRange);
+    
+    const f = imap.seq.fetch(actualRange, {
       bodies: '',
       struct: true
     });
     
-    f.on('message', (msg: any) => {
+    f.on('message', (msg: any, seqno: number) => {
+      console.log('Processing message #' + seqno);
       let buffer = '';
       
       msg.on('body', (stream: any) => {
@@ -59,8 +93,15 @@ function fetchMessages(imap: any, range: string): Promise<any[]> {
       });
     });
     
-    f.once('error', reject);
-    f.once('end', () => resolve(messages));
+    f.once('error', (err: any) => {
+      console.error('Fetch error:', err);
+      reject(err);
+    });
+    
+    f.once('end', () => {
+      console.log('Fetch complete, messages:', messages.length);
+      resolve(messages);
+    });
   });
 }
 
@@ -99,6 +140,7 @@ Deno.serve(async (req: Request) => {
     }
 
     const { accountId, action, folder, range } = await req.json();
+    console.log('Request:', { accountId, action, folder });
 
     const { data: account, error: accountError } = await supabaseClient
       .from('email_accounts')
@@ -107,6 +149,7 @@ Deno.serve(async (req: Request) => {
       .maybeSingle();
 
     if (accountError || !account) {
+      console.error('Account error:', accountError);
       throw new Error('Account not found');
     }
 
@@ -126,24 +169,31 @@ Deno.serve(async (req: Request) => {
       const boxes = await getBoxes(imap);
       result = { boxes };
     } else if (action === 'fetchMessages') {
-      await openBox(imap, folder || 'INBOX');
-      const rawMessages = await fetchMessages(imap, range || '1:10');
+      const box = await openBox(imap, folder || 'INBOX');
+      const rawMessages = await fetchMessages(imap, box, range || '1:50');
       
+      console.log('Parsing messages...');
       const parsedMessages = await Promise.all(
         rawMessages.map(async (raw) => {
-          const parsed = await simpleParser(raw);
-          return {
-            from: parsed.from?.text || '',
-            to: parsed.to?.text || '',
-            subject: parsed.subject || '',
-            date: parsed.date || new Date(),
-            text: parsed.text || '',
-            html: parsed.html || '',
-          };
+          try {
+            const parsed = await simpleParser(raw);
+            return {
+              from: parsed.from?.text || '',
+              to: parsed.to?.text || '',
+              subject: parsed.subject || '(Sans objet)',
+              date: parsed.date || new Date(),
+              text: parsed.text || '',
+              html: parsed.html || '',
+            };
+          } catch (err) {
+            console.error('Error parsing message:', err);
+            return null;
+          }
         })
       );
       
-      result = { messages: parsedMessages };
+      result = { messages: parsedMessages.filter(m => m !== null) };
+      console.log('Returning', result.messages.length, 'messages');
     } else {
       throw new Error('Invalid action');
     }
@@ -157,8 +207,12 @@ Deno.serve(async (req: Request) => {
       },
     });
   } catch (error) {
+    console.error('Function error:', error);
     return new Response(
-      JSON.stringify({ error: error.message }),
+      JSON.stringify({ 
+        error: error.message,
+        details: error.toString()
+      }),
       {
         status: 400,
         headers: {

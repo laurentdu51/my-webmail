@@ -23,26 +23,35 @@ async function getAuthHeaders() {
 }
 
 export async function fetchMessages(accountId: string, folder: string = 'INBOX', range: string = '1:50'): Promise<EmailMessage[]> {
-  const headers = await getAuthHeaders();
+  try {
+    const headers = await getAuthHeaders();
 
-  const response = await fetch(IMAP_FUNCTION_URL, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      accountId,
-      action: 'fetchMessages',
-      folder,
-      range,
-    }),
-  });
+    console.log('Fetching messages from:', IMAP_FUNCTION_URL);
 
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.error || 'Failed to fetch messages');
+    const response = await fetch(IMAP_FUNCTION_URL, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        accountId,
+        action: 'fetchMessages',
+        folder,
+        range,
+      }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error('Failed to fetch messages:', data);
+      throw new Error(data.error || data.details || 'Failed to fetch messages');
+    }
+
+    console.log('Successfully fetched', data.messages?.length || 0, 'messages');
+    return data.messages || [];
+  } catch (error) {
+    console.error('Error in fetchMessages:', error);
+    throw error;
   }
-
-  const data = await response.json();
-  return data.messages;
 }
 
 export async function listFolders(accountId: string) {
