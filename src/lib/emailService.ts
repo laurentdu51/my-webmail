@@ -39,12 +39,13 @@ export async function fetchMessages(accountId: string, folder: string = 'INBOX',
       }),
     });
 
-    const data = await response.json();
-
     if (!response.ok) {
-      console.error('Failed to fetch messages:', data);
-      throw new Error(data.error || data.details || 'Failed to fetch messages');
+      const data = await response.json();
+      console.error('Failed to fetch messages:', response.status, data);
+      throw new Error(data.error || data.details || `Failed to fetch messages (${response.status})`);
     }
+
+    const data = await response.json();
 
     console.log('Successfully fetched', data.messages?.length || 0, 'messages');
     return data.messages || [];
