@@ -21,12 +21,23 @@ function App() {
   const [replyToEmail, setReplyToEmail] = useState<EmailMessage | undefined>();
   const [loading, setLoading] = useState(false);
   const [editAccount, setEditAccount] = useState<EmailAccount | undefined>();
+  const [showPasswordReset, setShowPasswordReset] = useState(false);
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordResetLoading, setPasswordResetLoading] = useState(false);
 
   useEffect(() => {
     checkUser();
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const hash = window.location.hash;
+    if (hash && hash.includes('type=recovery')) {
+      setShowPasswordReset(true);
+    }
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       (async () => {
+        if (event === 'PASSWORD_RECOVERY') {
+          setShowPasswordReset(true);
+        }
         setUser(session?.user || null);
         if (session?.user) {
           loadAccounts();
@@ -106,6 +117,73 @@ function App() {
       setShowAccountSetup(true);
     }
   };
+
+  const handlePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setPasswordResetLoading(true);
+
+    try {
+      const { error } = await supabase.auth.updateUser({
+        password: newPassword
+      });
+
+      if (error) throw error;
+
+      alert('Mot de passe mis à jour avec succès !');
+      setShowPasswordReset(false);
+      setNewPassword('');
+      window.location.hash = '';
+    } catch (error: any) {
+      alert(`Erreur: ${error.message}`);
+    } finally {
+      setPasswordResetLoading(false);
+    }
+  };
+
+  if (showPasswordReset) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-gray-100 flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-md">
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center justify-center w-16 h-16 bg-blue-600 rounded-full mb-4">
+              <Mail size={32} className="text-white" />
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">
+              Nouveau mot de passe
+            </h1>
+            <p className="text-gray-600">
+              Choisissez un nouveau mot de passe pour votre compte
+            </p>
+          </div>
+
+          <form onSubmit={handlePasswordReset} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Nouveau mot de passe
+              </label>
+              <input
+                type="password"
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                placeholder="••••••••"
+                required
+                minLength={6}
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={passwordResetLoading}
+              className="w-full py-3 bg-blue-600 text-white rounded-lg font-medium hover:bg-blue-700 transition disabled:opacity-50"
+            >
+              {passwordResetLoading ? 'Mise à jour...' : 'Mettre à jour le mot de passe'}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return <AuthForm onAuth={checkUser} />;
