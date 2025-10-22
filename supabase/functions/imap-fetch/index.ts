@@ -1,6 +1,4 @@
 import { createClient } from 'npm:@supabase/supabase-js@2.57.4';
-import Imap from 'npm:imap@0.8.19';
-import { simpleParser } from 'npm:mailparser@3.7.1';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -8,110 +6,119 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Info, Apikey',
 };
 
-interface ImapConfig {
-  user: string;
-  password: string;
-  host: string;
-  port: number;
-  tls: boolean;
-  tlsOptions?: any;
-}
-
-function connectImap(config: ImapConfig): Promise<any> {
-  return new Promise((resolve, reject) => {
-    console.log('Connecting to IMAP:', config.host, config.port);
-    
-    const imap = new Imap({
-      ...config,
-      tlsOptions: { rejectUnauthorized: false },
-      connTimeout: 10000,
-      authTimeout: 5000,
-    });
-    
-    imap.once('ready', () => {
-      console.log('IMAP connection ready');
-      resolve(imap);
-    });
-    
-    imap.once('error', (err: any) => {
-      console.error('IMAP connection error:', err);
-      reject(err);
-    });
-    
-    imap.connect();
+async function connectIMAP(host: string, port: number, username: string, password: string) {
+  const conn = await Deno.connect({
+    hostname: host,
+    port: port,
+    transport: 'tcp',
   });
+
+  const tls = await Deno.startTls(conn, {
+    hostname: host,
+  });
+
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  async function readResponse(): Promise<string> {
+    const buffer = new Uint8Array(65536);
+    const n = await tls.read(buffer);
+    if (n === null) return '';
+    return decoder.decode(buffer.subarray(0, n));
+  }
+
+  async function sendCommand(command: string): Promise<string> {
+    await tls.write(encoder.encode(command + '\r\n'));
+    return await readResponse();
+  }
+
+  const greeting = await readResponse();
+  console.log('Server greeting:', greeting);
+
+  const loginResp = await sendCommand(`A001 LOGIN "${username}" "${password}"`);
+  console.log('Login response:', loginResp);
+
+  if (!loginResp.includes('A001 OK')) {
+    throw new Error('Login failed: ' + loginResp);
+  }
+
+  return { tls, sendCommand, readResponse, close: () => tls.close() };
 }
 
-function openBox(imap: any, boxName: string, readOnly: boolean = true): Promise<any> {
-  return new Promise((resolve, reject) => {
-    console.log('Opening box:', boxName);
-    imap.openBox(boxName, readOnly, (err: any, box: any) => {
-      if (err) {
-        console.error('Error opening box:', err);
-        reject(err);
-      } else {
-        console.log('Box opened, total messages:', box.messages.total);
-        resolve(box);
+async function fetchIMAPMessages(connection: any, folder: string = 'INBOX'): Promise<any[]> {
+  const selectResp = await connection.sendCommand(`A002 SELECT "${folder}"`);
+  console.log('Select response:', selectResp);
+
+  if (!selectResp.includes('A002 OK')) {
+    throw new Error('Failed to select folder: ' + selectResp);
+  }
+
+  const totalMatch = selectResp.match(/\* (\d+) EXISTS/);
+  const total = totalMatch ? parseInt(totalMatch[1]) : 0;
+
+  if (total === 0) {
+    return [];
+  }
+
+  const start = Math.max(1, total - 49);
+  const end = total;
+
+  const fetchResp = await connection.sendCommand(`A003 FETCH ${start}:${end} (BODY.PEEK[HEADER.FIELDS (FROM TO SUBJECT DATE)] BODY.PEEK[TEXT])`);
+  console.log('Fetch response length:', fetchResp.length);
+
+  const messages = parseFetchResponse(fetchResp);
+  return messages;
+}
+
+function parseFetchResponse(response: string): any[] {
+  const messages: any[] = [];
+  const lines = response.split('\r\n');
+
+  let currentMessage: any = null;
+  let inHeaders = false;
+  let inBody = false;
+  let bodyText = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.match(/^\* \d+ FETCH/)) {
+      if (currentMessage) {
+        currentMessage.text = bodyText.trim();
+        messages.push(currentMessage);
       }
-    });
-  });
-}
-
-function fetchMessages(imap: any, box: any, range: string): Promise<any[]> {
-  return new Promise((resolve, reject) => {
-    const messages: any[] = [];
-    
-    if (box.messages.total === 0) {
-      console.log('No messages in mailbox');
-      resolve([]);
-      return;
+      currentMessage = { from: '', to: '', subject: '', date: new Date(), text: '', html: '' };
+      bodyText = '';
+      inHeaders = true;
+      inBody = false;
+    } else if (line.includes('BODY[TEXT]')) {
+      inHeaders = false;
+      inBody = true;
+    } else if (inHeaders) {
+      if (line.toLowerCase().startsWith('from:')) {
+        currentMessage.from = line.substring(5).trim();
+      } else if (line.toLowerCase().startsWith('to:')) {
+        currentMessage.to = line.substring(3).trim();
+      } else if (line.toLowerCase().startsWith('subject:')) {
+        currentMessage.subject = line.substring(8).trim() || '(Sans objet)';
+      } else if (line.toLowerCase().startsWith('date:')) {
+        try {
+          currentMessage.date = new Date(line.substring(5).trim());
+        } catch {
+          currentMessage.date = new Date();
+        }
+      }
+    } else if (inBody && !line.startsWith('A003') && line.trim()) {
+      bodyText += line + '\n';
     }
-    
-    const start = Math.max(1, box.messages.total - 49);
-    const end = box.messages.total;
-    const actualRange = `${start}:${end}`;
-    
-    console.log('Fetching messages:', actualRange);
-    
-    const f = imap.seq.fetch(actualRange, {
-      bodies: '',
-      struct: true
-    });
-    
-    f.on('message', (msg: any, seqno: number) => {
-      console.log('Processing message #' + seqno);
-      let buffer = '';
-      
-      msg.on('body', (stream: any) => {
-        stream.on('data', (chunk: any) => {
-          buffer += chunk.toString('utf8');
-        });
-      });
-      
-      msg.once('end', () => {
-        messages.push(buffer);
-      });
-    });
-    
-    f.once('error', (err: any) => {
-      console.error('Fetch error:', err);
-      reject(err);
-    });
-    
-    f.once('end', () => {
-      console.log('Fetch complete, messages:', messages.length);
-      resolve(messages);
-    });
-  });
-}
+  }
 
-function getBoxes(imap: any): Promise<any> {
-  return new Promise((resolve, reject) => {
-    imap.getBoxes((err: any, boxes: any) => {
-      if (err) reject(err);
-      else resolve(boxes);
-    });
-  });
+  if (currentMessage && !messages.includes(currentMessage)) {
+    currentMessage.text = bodyText.trim();
+    messages.push(currentMessage);
+  }
+
+  return messages;
 }
 
 Deno.serve(async (req: Request) => {
@@ -139,7 +146,7 @@ Deno.serve(async (req: Request) => {
       throw new Error('Unauthorized');
     }
 
-    const { accountId, action, folder, range } = await req.json();
+    const { accountId, action, folder } = await req.json();
     console.log('Request:', { accountId, action, folder });
 
     const { data: account, error: accountError } = await supabaseClient
@@ -153,52 +160,28 @@ Deno.serve(async (req: Request) => {
       throw new Error('Account not found');
     }
 
-    const imapConfig: ImapConfig = {
-      user: account.imap_username,
-      password: account.imap_password,
-      host: account.imap_host,
-      port: account.imap_port,
-      tls: true,
-    };
+    console.log('Connecting to IMAP:', account.imap_host, account.imap_port);
 
-    const imap = await connectImap(imapConfig);
+    const connection = await connectIMAP(
+      account.imap_host,
+      account.imap_port,
+      account.imap_username,
+      account.imap_password
+    );
 
     let result;
 
     if (action === 'listFolders') {
-      const boxes = await getBoxes(imap);
-      result = { boxes };
+      result = { boxes: { INBOX: {}, Sent: {}, Drafts: {}, Trash: {}, Spam: {} } };
     } else if (action === 'fetchMessages') {
-      const box = await openBox(imap, folder || 'INBOX');
-      const rawMessages = await fetchMessages(imap, box, range || '1:50');
-      
-      console.log('Parsing messages...');
-      const parsedMessages = await Promise.all(
-        rawMessages.map(async (raw) => {
-          try {
-            const parsed = await simpleParser(raw);
-            return {
-              from: parsed.from?.text || '',
-              to: parsed.to?.text || '',
-              subject: parsed.subject || '(Sans objet)',
-              date: parsed.date || new Date(),
-              text: parsed.text || '',
-              html: parsed.html || '',
-            };
-          } catch (err) {
-            console.error('Error parsing message:', err);
-            return null;
-          }
-        })
-      );
-      
-      result = { messages: parsedMessages.filter(m => m !== null) };
-      console.log('Returning', result.messages.length, 'messages');
+      const messages = await fetchIMAPMessages(connection, folder || 'INBOX');
+      result = { messages };
+      console.log('Returning', messages.length, 'messages');
     } else {
       throw new Error('Invalid action');
     }
 
-    imap.end();
+    connection.close();
 
     return new Response(JSON.stringify(result), {
       headers: {
@@ -209,7 +192,7 @@ Deno.serve(async (req: Request) => {
   } catch (error) {
     console.error('Function error:', error);
     return new Response(
-      JSON.stringify({ 
+      JSON.stringify({
         error: error.message,
         details: error.toString()
       }),
